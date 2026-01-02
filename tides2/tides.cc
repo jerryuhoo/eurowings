@@ -45,6 +45,15 @@ using namespace std;
 using namespace stmlib;
 using namespace tides;
 
+// --- FIX FOR LINKER ERROR ---
+extern "C" {
+  int* __errno() {
+    static int e = 0;
+    return &e;
+  }
+}
+// ----------------------------
+
 const bool skip_factory_test = false;
 const bool test_adc_noise = false;
 const size_t kDacBlockSize = 2;
@@ -249,7 +258,8 @@ void Init() {
   
   previous_output_mode = OutputMode(settings.state().output_mode);
 
-  ui.Init(&settings, &factory_test);
+  // CHANGED: Passing &poly_slope_generator to UI
+  ui.Init(&settings, &poly_slope_generator, &factory_test);
   factory_test.Init(&settings, &cv_reader, &gate_inputs, &ui.switches());
 
   if (freshly_baked && !skip_factory_test) {

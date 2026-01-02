@@ -35,7 +35,7 @@
 
 #include "tides2/drivers/leds.h"
 #include "tides2/drivers/switches.h"
-
+#include "tides2/poly_slope_generator.h"
 #include "tides2/settings.h"
 
 namespace tides {
@@ -54,7 +54,8 @@ class Ui {
   Ui() { }
   ~Ui() { }
   
-  void Init(Settings* settings, FactoryTest* factory_test);
+  // Revised Init to accept generator
+  void Init(Settings* settings, PolySlopeGenerator* generator, FactoryTest* factory_test);
   void Poll();
   void DoEvents();
   
@@ -78,9 +79,16 @@ class Ui {
   bool ignore_release_[SWITCH_LAST];
   
   Settings* settings_;
+  PolySlopeGenerator* generator_; // Added pointer
   FactoryTest* factory_test_;
   
   UiMode mode_;
+
+  // Added logic to track feature mode state locally in UI if needed, 
+  // or we can read from Settings if we persist it later.
+  // For now, we will toggle a local state or just query the generator?
+  // Let's store the state here to manage LED blinking.
+  PolySlopeGenerator::FeatureMode feature_mode_;
 
   static const LedColor palette_[4];
   

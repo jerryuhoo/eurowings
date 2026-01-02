@@ -33,6 +33,7 @@
 #include "stmlib/dsp/parameter_interpolator.h"
 #include "stmlib/dsp/polyblep.h"
 #include "stmlib/dsp/hysteresis_quantizer.h"
+#include "stmlib/utils/random.h"
 
 #include "tides2/ramp_generator.h"
 #include "tides2/ramp_shaper.h"
@@ -87,6 +88,11 @@ class PolySlopeGenerator {
   enum {
     num_channels = 4
   };
+
+  enum FeatureMode {
+    FEATURE_MODE_TIDES,
+    FEATURE_MODE_QUANTUM
+  };
   
   struct OutputSample {
     float channel[num_channels];
@@ -103,6 +109,11 @@ class PolySlopeGenerator {
     shape_ = 0.0f;
     fold_ = 0.0f;
     
+    feature_mode_ = FEATURE_MODE_TIDES;
+    std::fill(&quantum_current_[0], &quantum_current_[num_channels], 0.0f);
+    std::fill(&quantum_target_[0], &quantum_target_[num_channels], 0.0f);
+    quantum_trigger_state_ = 0;
+
     ramp_generator_.Init();
     for (size_t i = 0; i < num_channels; ++i) {
       ramp_shaper_[i].Init();
@@ -160,6 +171,12 @@ class PolySlopeGenerator {
       OutputSample* out,
       size_t size) {
     
+    // Check for custom Quantum Mode
+    if (feature_mode_ == FEATURE_MODE_QUANTUM) {
+      RenderQuantum(frequency, pw, shape, smoothness, shift, gate_flags, out, size);
+      return;
+    }
+
     // const float max_ratio = output_mode == OUTPUT_MODE_FREQUENCY
     //     ? (range == RANGE_CONTROL ? 0.125f : 0.25f)
     //     : 1.0f;
@@ -212,8 +229,172 @@ class PolySlopeGenerator {
       }
     }
   }
+
+  void set_feature_mode(FeatureMode mode) {
+    feature_mode_ = mode;
+  }
   
  private:
+  void RenderQuantum(
+      float frequency,
+      float pw,
+      float shape,
+      float smoothness,
+      float shift,
+      const stmlib::GateFlags* gate_flags,
+      OutputSample* out,
+      size_t size) {
+    
+    // Slew Coefficient Calculation
+    float slew_coeff;
+    if (smoothness < 0.05f) {
+      slew_coeff = 1.0f; 
+    } else {
+      float s = 1.0f - smoothness;
+      slew_coeff = 0.001f + s * s * 0.5f; 
+    }
+    
+    // Scale Selection
+    const int kNumScales = 6;
+    int scale_index = static_cast<int>(pw * kNumScales * 0.99f);
+    if (scale_index >= kNumScales) scale_index = kNumScales - 1;
+    if (scale_index < 0) scale_index = 0;
+
+    stmlib::ParameterInterpolator rate(&frequency_, frequency, size);
+    stmlib::ParameterInterpolator bias(&shape_, shape, size);
+    stmlib::ParameterInterpolator shift_amt(&shift_, shift, size);
+
+    for (size_t i = 0; i < size; ++i) {
+      float current_frequency = rate.Next();
+      float current_shift = shift_amt.Next();
+      float current_bias = bias.Next();
+      
+      bool clocked = false;
+      bool trig_detected = (gate_flags[i] & stmlib::GATE_FLAG_RISING);
+      
+      // Internal Clock Logic
+      float dummy_pw = 0.5f;
+      ramp_generator_.Step<RAMP_MODE_LOOPING, OUTPUT_MODE_AMPLITUDE, RANGE_AUDIO, false>(
+          current_frequency, &dummy_pw, gate_flags[i], 0.0f);
+      
+      // Phase 0..1
+      float phase = ramp_generator_.phase(0);
+
+      // Detect Wrap-around (Clock Tick)
+      if (phase < 0.001f && quantum_trigger_state_ == 1) {
+        clocked = true;
+        quantum_trigger_state_ = 0;
+      } else if (phase > 0.5f) {
+        quantum_trigger_state_ = 1;
+      }
+      
+      if (trig_detected) clocked = true;
+
+      // --- Random Generation ---
+      if (clocked) {
+        float r = stmlib::Random::GetFloat();
+        
+        // Shape Bias
+        float power = 1.0f;
+        if (current_bias > 0.5f) {
+           power = 1.0f - (current_bias - 0.5f) * 1.5f; 
+        } else {
+           power = 1.0f + (0.5f - current_bias) * 6.0f; 
+        }
+        r = powf(r, power);
+        
+        float raw_voltage = r * 5.0f; // 0-5V range
+        float quantized_volts = Quantize(raw_voltage, scale_index);
+        
+        // Update Targets
+        // Out 1: Main Pitch
+        quantum_target_[0] = quantized_volts;
+        
+        // Out 2: Harmony Pitch
+        float harmony_offset = current_shift * 2.0f; // 0-2V spread
+        quantum_target_[1] = Quantize(raw_voltage + harmony_offset, scale_index);
+        
+        // Out 4 Trigger (for Envelope generation)
+        // We set target to 8V instantly on clock, then it will decay
+        quantum_current_[3] = 8.0f; 
+      }
+
+      // --- Slew & Output Calculation ---
+      
+      // Channel 0 & 1 (Pitch CVs) - Apply Slew & Offset
+      for (int ch = 0; ch < 2; ++ch) {
+        float error = quantum_target_[ch] - quantum_current_[ch];
+        quantum_current_[ch] += error * slew_coeff;
+        // Output with +2V Offset (Range 2V - 7V)
+        out[i].channel[ch] = quantum_current_[ch] + 2.0f;
+      }
+
+      // Channel 2 (Output 3): GATE
+      // Logic: High when phase < 0.2 (20% Duty Cycle) OR if external trig happened recently
+      // This creates a clean 0V or 8V pulse.
+      // Note: No Offset!
+      if (phase < 0.2f || (trig_detected && i < 100)) { // Simple pulse logic
+         out[i].channel[2] = 8.0f;
+      } else {
+         out[i].channel[2] = 0.0f;
+      }
+
+      // Channel 3 (Output 4): ENVELOPE (Decay)
+      // Logic: Exponential decay from current value down to 0
+      // Decay speed fixed or modulated? Let's make it fixed fast-ish for now.
+      // 0.9995 per sample @ 48kHz is slow, 0.99 is fast.
+      quantum_current_[3] *= 0.995f; 
+      out[i].channel[3] = quantum_current_[3]; // 0V to 8V range, no offset
+    }
+  }
+
+  float Quantize(float voltage, int scale_idx) {
+    // voltage is in Volts (0.0 to 5.0 typically)
+    // 1 semitone = 1/12 V = 0.08333f
+    
+    // Scales definitions (Intervals from Root)
+    // 0: Chromatic (1,1,1...)
+    // 1: Major (2,2,1,2,2,2,1)
+    // 2: Minor (2,1,2,2,1,2,2)
+    // 3: Pentatonic Major (2,2,3,2,3)
+    // 4: Pentatonic Minor (3,2,2,3,2)
+    // 5: Octaves (12)
+    
+    // Simplified quantization: Convert to semitones, find nearest in scale
+    int semitone = static_cast<int>(std::floor(voltage * 12.0f + 0.5f));
+    int octave = semitone / 12;
+    int note = semitone % 12;
+    if (note < 0) note += 12; // Handle negative if any
+    
+    // Map of allowed notes per scale (Binary mask)
+    // C C# D D# E F F# G G# A A# B
+    const uint16_t kScales[6] = {
+      0b111111111111, // Chromatic
+      0b101011010101, // Major (C D E F G A B)
+      0b101101011010, // Minor (C D Eb F G Ab Bb)
+      0b101010010100, // Penta Major (C D E G A)
+      0b100101010010, // Penta Minor (C Eb F G Bb)
+      0b100000000000  // Octaves (C)
+    };
+    
+    uint16_t mask = kScales[scale_idx];
+    
+    // Find nearest active bit
+    // Simple search up/down
+    if (!(mask & (1 << note))) {
+       // Note not in scale, search neighbors
+       for (int k = 1; k < 6; ++k) {
+          int up = (note + k) % 12;
+          if (mask & (1 << up)) { note = up; break; }
+          int down = (note - k);
+          if (down < 0) down += 12;
+          if (mask & (1 << down)) { note = down; break; }
+       }
+    }
+    
+    return (float)(octave * 12 + note) / 12.0f;
+  }
+
   template<RampMode ramp_mode, OutputMode output_mode, Range range>
   inline void RenderInternal(
       float frequency,
@@ -408,6 +589,12 @@ class PolySlopeGenerator {
   float fold_;
   
   stmlib::HysteresisQuantizer2 ratio_index_quantizer_;
+
+  // Quantum Mode State Variables
+  FeatureMode feature_mode_;
+  float quantum_current_[num_channels];
+  float quantum_target_[num_channels];
+  int quantum_trigger_state_;
 
   RampGenerator<num_channels> ramp_generator_;
 

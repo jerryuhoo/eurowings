@@ -49,15 +49,18 @@ const LedColor Ui::palette_[4] = {
   LED_COLOR_OFF
 };
 
-void Ui::Init(Settings* settings, FactoryTest* factory_test) {
+// Modified Init to accept generator pointer
+void Ui::Init(Settings* settings, PolySlopeGenerator* generator, FactoryTest* factory_test) {
   leds_.Init();
   switches_.Init();
   
   system_clock.Init();
   
   settings_ = settings;
+  generator_ = generator;
   factory_test_ = factory_test;
   mode_ = UI_MODE_NORMAL;
+  feature_mode_ = PolySlopeGenerator::FEATURE_MODE_TIDES;
   
   if (switches_.pressed_immediate(SWITCH_SHIFT)) {
     State* state = settings_->mutable_state();
@@ -129,6 +132,7 @@ void Ui::UpdateLEDs() {
   leds_.Clear();
   
   bool blink = system_clock.milliseconds() & 256;
+  bool fast_blink = system_clock.milliseconds() & 128;
   
   switch (mode_) {
     case UI_MODE_NORMAL:
@@ -138,7 +142,15 @@ void Ui::UpdateLEDs() {
         
         leds_.set(LED_MODE, MakeColor(s.mode, color_blind));
         leds_.set(LED_RANGE, MakeColor(s.range, color_blind));
-        leds_.set(LED_SHIFT, MakeColor((s.output_mode + 3) % 4, color_blind));
+        
+        // Quantum Mode Visualization on SHIFT LED ---
+        if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_QUANTUM) {
+           // Fast blink RED (or alternating Red/Green) to indicate Quantum Mode on Output LED
+           leds_.set(LED_SHIFT, fast_blink ? LED_COLOR_RED : LED_COLOR_OFF);
+        } else {
+           // Normal Output LED behavior
+           leds_.set(LED_SHIFT, MakeColor((s.output_mode + 3) % 4, color_blind));
+        }
       }
       break;
       
@@ -163,16 +175,67 @@ void Ui::UpdateLEDs() {
 }
 
 void Ui::OnSwitchPressed(const Event& e) {
- 
+  // Long press handling is done in OnSwitchReleased or poll logic usually,
+  // but if we want immediate feedback on press (which we don't for long press),
+  // we leave this empty or for other features.
 }
 
 void Ui::OnSwitchReleased(const Event& e) {
-  if (mode_ == UI_MODE_NORMAL && e.data >= kLongPressDuration) {
-    if ((e.control_id == SWITCH_RANGE && switches_.pressed(SWITCH_SHIFT)) ||
-        (e.control_id == SWITCH_SHIFT && switches_.pressed(SWITCH_RANGE))) {
-      mode_ = UI_MODE_CALIBRATION_C1;
-      factory_test_->Calibrate(0, 1.0f, 3.0f);
-      ignore_release_[SWITCH_RANGE] = ignore_release_[SWITCH_SHIFT] = true;
+  // Check for Long Press (Short press logic falls through if duration is small)
+  // Note: The Poll() function emits an event with large duration WHILE pressed
+  // if it exceeds kLongPressDuration. So we might get an event here that is actually
+  // a "hold" event, not a release, if the code structure uses queue for holds.
+  // Looking at Poll():
+  // if (pressed_time > kLongPressDuration) { queue_.AddEvent(..., pressed_time); ignore_release_ = true; }
+  // So we get a long press event BEFORE release.
+  
+  if (mode_ == UI_MODE_NORMAL) {
+    if (e.data >= kLongPressDuration) {
+      // --- Long Press Handlers ---
+      
+      // Original Calibration Combo: Range + Shift (or Shift + Range)
+      if ((e.control_id == SWITCH_RANGE && switches_.pressed(SWITCH_SHIFT)) ||
+          (e.control_id == SWITCH_SHIFT && switches_.pressed(SWITCH_RANGE))) {
+        mode_ = UI_MODE_CALIBRATION_C1;
+        factory_test_->Calibrate(0, 1.0f, 3.0f);
+        ignore_release_[SWITCH_RANGE] = ignore_release_[SWITCH_SHIFT] = true;
+      }
+      // New Feature: Long Press SHIFT (Output Button) alone -> Toggle Quantum Mode
+      else if (e.control_id == SWITCH_SHIFT && !switches_.pressed(SWITCH_RANGE) && !switches_.pressed(SWITCH_MODE)) {
+        if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_TIDES) {
+          feature_mode_ = PolySlopeGenerator::FEATURE_MODE_QUANTUM;
+        } else {
+          feature_mode_ = PolySlopeGenerator::FEATURE_MODE_TIDES;
+        }
+        generator_->set_feature_mode(feature_mode_);
+        
+        // Prevent release from triggering normal output mode change
+        ignore_release_[SWITCH_SHIFT] = true; 
+      }
+    } else {
+      // --- Short Press Handlers ---
+      // We are in OnSwitchReleased, so this is a short press release (if ignore_release is false)
+      // Note: DoEvents loop passes e.data. If it was added by Release, data is duration.
+      
+      // If we are here, it's a release event or a short press event pulled from queue.
+      // Poll adds event with duration on release.
+      
+      State* s = settings_->mutable_state();
+      switch (e.control_id) {
+        case SWITCH_MODE:
+          s->mode = (s->mode + 1) % 3;
+          break;
+        case SWITCH_RANGE:
+          // Change range only if we are in Normal Tides mode? 
+          // Or allow changing range (Clock Div/Mult) in Quantum mode too?
+          // Let's allow it, as it might be useful for clock base.
+          s->range = (s->range + 1) % 3;
+          break;
+        case SWITCH_SHIFT:
+          s->output_mode = (s->output_mode + 1) % 4;
+          break;
+      }
+      settings_->SaveState();
     }
   } else if (mode_ == UI_MODE_CALIBRATION_C1) {
     factory_test_->Calibrate(1, 1.0f, 3.0f);
@@ -180,20 +243,6 @@ void Ui::OnSwitchReleased(const Event& e) {
   } else if (mode_ == UI_MODE_CALIBRATION_C3) {
     factory_test_->Calibrate(2, 1.0f, 3.0f);
     mode_ = UI_MODE_NORMAL;
-  } else {
-    State* s = settings_->mutable_state();
-    switch (e.control_id) {
-      case SWITCH_MODE:
-        s->mode = (s->mode + 1) % 3;
-        break;
-      case SWITCH_RANGE:
-        s->range = (s->range + 1) % 3;
-        break;
-      case SWITCH_SHIFT:
-        s->output_mode = (s->output_mode + 1) % 4;
-        break;
-    }
-    settings_->SaveState();
   }
 }
 
