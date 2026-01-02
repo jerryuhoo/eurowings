@@ -258,9 +258,8 @@ void Init() {
   
   previous_output_mode = OutputMode(settings.state().output_mode);
 
-  // CHANGED: Passing &poly_slope_generator to UI
+  poly_slope_generator.Init(); 
   ui.Init(&settings, &poly_slope_generator, &factory_test);
-  factory_test.Init(&settings, &cv_reader, &gate_inputs, &ui.switches());
 
   if (freshly_baked && !skip_factory_test) {
     factory_test.Start();
@@ -271,7 +270,6 @@ void Init() {
 #endif  // PROFILE_INTERRUPT
   }
   
-  poly_slope_generator.Init();
   ratio_index_quantizer.Init(20, 0.05f, false);
   ramp_extractor.Init(kSampleRate, 40.0f / kSampleRate);
   std::fill(&no_gate[0], &no_gate[kBlockSize], GATE_FLAG_LOW);

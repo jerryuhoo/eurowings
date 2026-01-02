@@ -64,7 +64,12 @@ struct State {
   uint8_t range;
   uint8_t output_mode;
   uint8_t color_blind;
-  uint8_t padding[4];
+
+  // 利用 padding 存储 Quantum 参数 ---
+  uint8_t feature_mode;        // 0: Tides, 1: Quantum
+  uint8_t gate_probability_mode;
+  uint8_t sub_divider_mode;
+  uint8_t padding[1];          // 原来是 [4], 用了 3 个字节，剩 1 个
   
   enum { tag = 0x54415453 };  // STAT
 };

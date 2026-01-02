@@ -89,6 +89,9 @@ bool Settings::Init() {
     CONSTRAIN(state_.mode, 0, 2);
     CONSTRAIN(state_.range, 0, 2);
     CONSTRAIN(state_.output_mode, 0, 3);
+    CONSTRAIN(state_.feature_mode, 0, 1);
+    CONSTRAIN(state_.gate_probability_mode, 0, 3);
+    CONSTRAIN(state_.sub_divider_mode, 0, 3);
   }
   
   return success;

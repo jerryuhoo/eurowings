@@ -60,7 +60,15 @@ void Ui::Init(Settings* settings, PolySlopeGenerator* generator, FactoryTest* fa
   generator_ = generator;
   factory_test_ = factory_test;
   mode_ = UI_MODE_NORMAL;
-  feature_mode_ = PolySlopeGenerator::FEATURE_MODE_TIDES;
+  const State& s = settings_->state();
+  
+  // 恢复 Feature Mode (Quantum/Original)
+  feature_mode_ = static_cast<PolySlopeGenerator::FeatureMode>(s.feature_mode);
+  generator_->set_feature_mode(feature_mode_);
+  
+  // 恢复 Quantum 参数
+  generator_->set_gate_probability_mode(s.gate_probability_mode);
+  generator_->set_sub_divider_mode(s.sub_divider_mode);
   
   if (switches_.pressed_immediate(SWITCH_SHIFT)) {
     State* state = settings_->mutable_state();
@@ -195,55 +203,71 @@ void Ui::OnSwitchReleased(const Event& e) {
     if (e.data >= kLongPressDuration) {
       // --- Long Press Handlers ---
       
-      // Original Calib Combo (Keep this active regardless of mode for safety)
+      // 1. Original Calib Combo
       if ((e.control_id == SWITCH_RANGE && switches_.pressed(SWITCH_SHIFT)) ||
           (e.control_id == SWITCH_SHIFT && switches_.pressed(SWITCH_RANGE))) {
         mode_ = UI_MODE_CALIBRATION_C1;
         factory_test_->Calibrate(0, 1.0f, 3.0f);
         ignore_release_[SWITCH_RANGE] = ignore_release_[SWITCH_SHIFT] = true;
       }
-      // NEW: Long Press (Output/Shift) -> Toggle Quantum Mode
+      // 2. Quantum/Tides
       else if (e.control_id == SWITCH_SHIFT && !switches_.pressed(SWITCH_RANGE)) {
         if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_TIDES) {
           feature_mode_ = PolySlopeGenerator::FEATURE_MODE_QUANTUM;
         } else {
           feature_mode_ = PolySlopeGenerator::FEATURE_MODE_TIDES;
         }
+        
         generator_->set_feature_mode(feature_mode_);
+        
+        settings_->mutable_state()->feature_mode = feature_mode_;
+        settings_->SaveState();
+        
         ignore_release_[SWITCH_SHIFT] = true; 
       }
     } else {
       // --- Short Press Handlers ---
       
-      // CRITICAL FIX: IF/ELSE structure to prevent Fall-Through to Standard Logic
       if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_QUANTUM) {
-          // --- Quantum Mode Controls ---
+          State* s = settings_->mutable_state();
+          
           switch (e.control_id) {
-            case SWITCH_RANGE: // Freq Button (Top)
+            case SWITCH_RANGE: // Top Button: Sub Clock Divider
               {
                 int m = generator_->sub_divider_mode();
                 m = (m + 1) % 4;
                 generator_->set_sub_divider_mode(m);
+                s->sub_divider_mode = m;
               }
               break;
-            case SWITCH_MODE: // Ramp Button (Mid)
+              
+            case SWITCH_MODE: // Mid Button: Gate Probability
               {
                 int m = generator_->gate_probability_mode();
                 m = (m + 1) % 4;
                 generator_->set_gate_probability_mode(m);
+                s->gate_probability_mode = m;
               }
               break;
-            case SWITCH_SHIFT: // Output Button (Bottom)
-              // Do nothing on short press in Quantum Mode
+              
+            case SWITCH_SHIFT: // Bottom Button: Output Mode
               break;
           }
+          
+          settings_->SaveState();
+          
       } else {
-          // --- Standard Tides Controls (Only runs when NOT in Quantum) ---
           State* s = settings_->mutable_state();
           switch (e.control_id) {
-            case SWITCH_MODE: s->mode = (s->mode + 1) % 3; break;
-            case SWITCH_RANGE: s->range = (s->range + 1) % 3; break;
-            case SWITCH_SHIFT: s->output_mode = (s->output_mode + 1) % 4; break;
+            case SWITCH_MODE: 
+              s->mode = (s->mode + 1) % 3; 
+              break;
+            case SWITCH_RANGE: 
+              s->range = (s->range + 1) % 3; 
+              break;
+            case SWITCH_SHIFT: 
+              s->output_mode = (s->output_mode + 1) % 4; 
+              break;
           }
           settings_->SaveState();
       }
