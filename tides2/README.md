@@ -1,153 +1,128 @@
 # Quantum Tides - Tides V2 定制固件
 
-**Quantum Tides** 是为 Mutable Instruments Tides V2 (2018) 硬件开发的一个替代固件。
+**Quantum Tides** 是为 Mutable Instruments Tides V2 (2018) 硬件开发的一个深度定制固件。
 
-它保留了 Tides V2 原有的所有功能（波形发生器/LFO），并增加了一个全新的 **"Quantum Mode"（量子模式）**。在这个模式下，Tides 变身为一个**4通道随机电压生成器与量化器**，其设计灵感来源于 Mutable Instruments Marbles（随机）和 Plaits（和声）。
-
-这个固件旨在将 Tides 变成你 Eurorack 系统中的"生成性大脑"，提供量化的旋律、和声伴奏以及随机节奏。
-
-## 📥 安装与升级
-
-1. **下载**: 获取编译好的 `tides2.wav` 文件。
-2. **连接**: 将音频播放设备（电脑/手机）的输出连接到 Tides 的 **FM 输入**接口。
-3. **进入升级模式**:
-   - 确保 Tides 已断电。
-   - 按住模块的 **OUTPUT** 按钮不放。
-   - 给模块上电。
-   - 此时所有 LED 会亮起，松开按钮。
-4. **播放**: 播放 wav 文件。
-   - 升级过程中 LED 会像进度条一样显示。
-   - 如果所有 LED 闪烁红灯，说明信号电平过低，请以此增加音量并重试。
-   - 如果遇到 Signal Error，请检查线材或关闭音效增强功能。
-5. **完成**: 升级完成后，模块会自动重启进入正常模式。
+它将原本的包络/LFO发生器彻底改造为一个 **双通道随机旋律生成器 (Dual-Voice Stochastic Generator)**。其核心算法基于 **图灵机 (Turing Machine)** 移位寄存器逻辑，结合了 **Bernoulli Gate (伯努利门)** 概率控制，旨在成为您 Eurorack 系统中源源不断的灵感大脑。
 
 ---
 
-## 🎛 模式切换
+## ✨ 核心特性 (Key Features)
 
-Quantum Tides 在启动时默认进入 **原厂标准模式**。
-
-- **进入/退出 Quantum 模式**: 长按（约 1 秒）**OUTPUT 按钮**（最上方的按钮）。
-- **视觉指示**:
-  - **原厂模式**: OUTPUT LED 显示绿色、黄色或熄灭（取决于频率范围）。
-  - **Quantum 模式**: OUTPUT LED 会 **快速闪烁红色/红绿色**，以示区别。
+* **双通道架构**: 主通道 (Main) 和 副通道 (Sub) 独立运行，副通道跟随主通道的和声与节奏。
+* **图灵机内核**: 使用伪随机移位寄存器生成旋律。旋钮全左为**锁定循环 (Loop)**，中间为**逐渐变异 (Evolve)**，全右为**纯随机 (Random)**。
+* **音乐性优化**:
+    * **电压范围**: 锁定在 **2V - 6V** (C4 - C8)，避开了浑浊的低频和刺耳的高频。
+    * **智能防跑调**: 采用 Sample & Hold 逻辑，丢音时 CV 保持不变，防止振荡器 Release 尾音跑调。
+    * **异或扰动**: 即使在寄存器变化微小时，也能产生大幅度的音程跳跃，旋律不单调。
+* **所见即所得**: 无菜单潜水，4 个输出口功能固定，LED 实时反馈状态。
 
 ---
 
-## 🌌 Quantum 模式功能详解
+## 📥 安装
 
-在 Quantum 模式下，Tides 不再生成平滑的循环波形，而是基于时钟生成 **随机游走电压 (Stochastic Random Voltages)**，并通过内置量化器输出。
+### 1. 固件升级
+1.  下载编译好的 `tides2.wav` 文件。
+2.  将音频播放设备的输出连接到 Tides 的 **FM 输入**。
+3.  按住 **OUTPUT 按钮** (最下方按钮) 上电，LED 全亮后松开。
+4.  播放音频文件，等待升级完成自动重启。
 
-### 核心概念
+### 2. 模式切换
+* **操作**: 长按 **OUTPUT 按钮** (最下方按钮) 约 1 秒。
+* **视觉反馈**:
+    * 🟢/🟡/⚫️ **原厂模式**: LED 显示常规颜色。
+    * 🚨 **Quantum 模式**: OUTPUT LED 会 **红绿快速交替闪烁**。
 
-- **时钟源**:
-  - 如果 **TRIG 输入** 未接线：模块使用内部时钟，速度由 Frequency 旋钮控制。
-  - 如果 **TRIG 输入** 接线：模块由外部时钟驱动，Frequency 旋钮控制时钟分频/倍频比率。
-- **信号流**:
-  时钟触发 -> 生成随机数 -> 经过 Shape 分布处理 -> 经过 Smoothness 滑音处理 -> 经过 Slope 量化 -> 经过 Shift 和声处理 -> 输出。
+---
 
-### 🎚 旋钮功能映射
+## 🎛 硬件接口定义 (Hardware Interface)
 
-| 物理旋钮 | 功能名称 | 详细说明 |
+### 1. 输出端口 (Outputs)
+所有输出均为固定功能，专为驱动双声部旋律设计。
+
+| 端口 | 功能名称 | 详细说明 | 推荐连接 |
+| :--- | :--- | :--- | :--- |
+| **OUT 1** | **Main CV** | **主旋律音高**。基于图灵机生成的 2V-6V 量化电压。 | 主振荡器 V/Oct |
+| **OUT 2** | **Main Gate** | **主节奏门信号**。受 Bernoulli 概率控制的 Gate。 | 主包络 Trig |
+| **OUT 3** | **Sub CV** | **副旋律音高**。基于主旋律，叠加 `SHIFT` 设定的音程偏移。 | 副振荡器 V/Oct |
+| **OUT 4** | **Sub Gate** | **副节奏门信号**。经过分频和独立概率计算的 Gate。 | 副包络 Trig |
+
+### 2. 输入端口 (Inputs)
+
+| 输入端口 | 逻辑说明 |
+| :--- | :--- |
+| **CLOCK** | **时钟源**。未插线时使用内部时钟；插线后同步外部时钟。 |
+| **TRIG** | **相位重置 (Sync)**。Quantum 模式默认**自动运行 (Auto-Run)**。当 TRIG 接收到上升沿信号时，会立即重置内部节奏相位，确保与外部系统对齐。 |
+| **V/OCT** | **移调 (Transpose)**。在此输入 CV 可以对生成的旋律进行全局移调。 |
+| **FM** | **变异度调制**。控制 `SHAPE` 参数，动态改变旋律的随机程度。 |
+
+---
+
+## 🎚 旋钮功能 (Knobs)
+
+| 旋钮 | 功能 | 算法逻辑 |
 | :--- | :--- | :--- |
-| **FREQUENCY** | **Rate / Div** | **速率/分频**: <br>- **无 Trig**: 控制内部随机生成的速率。<br>- **有 Trig**: 控制外部时钟的分频/倍频比率。 |
-| **SHAPE** | **Distribution** | **分布偏好 (Bias)**: 控制随机电压的分布概率。<br>- **12点**: 均匀分布。<br>- **顺时针**: 偏向高音/高电压。<br>- **逆时针**: 偏向低音/低电压。 |
-| **SLOPE** | **Scale** | **音阶选择**: 选择量化器的音阶（见下方音阶表）。<br>旋钮从左到右依次切换 6 种不同的调式。 |
-| **SMOOTHNESS** | **Slew** | **滑音/平滑度**: <br>- **逆时针 (CCW)**: 阶梯状电压 (Stepped)，音高瞬间变化。<br>- **顺时针 (CW)**: 引入滑音 (Slew/Glide)，使电压在音符间平滑过渡。 |
-| **SHIFT/LEVEL** | **Spread** | **和声/音程散布**: <br>- 控制 Output 2 和 Output 4 相对于主旋律 (Output 1) 的音程偏移量。<br>- 产生和弦或对位旋律效果。 |
-
-### 🎹 量化音阶 (通过 SLOPE 旋钮选择)
-
-固件内置了 6 种常用音阶，通过旋转 **SLOPE** 旋钮进行选择：
-
-1. **Chromatic** (半音阶 / 十二平均律)
-2. **Major** (自然大调)
-3. **Minor** (自然小调)
-4. **Pentatonic Major** (大调五声)
-5. **Pentatonic Minor** (小调五声)
-6. **Octaves/Fifths** (八度和五度)
+| **FREQUENCY** | **Speed** | **速度控制**。<br>在 Quantum 模式下，频率范围已优化为原厂的 8 倍速，适合生成活跃的旋律序列。 |
+| **SHAPE** | **Mutation** | **图灵机变异度 (Turing Machine)**。<br>- **全左 (CCW)**: **完全锁定**。重复播放一段 8-16 步的旋律 Loop。<br>- **中间 (12点)**: **Deja Vu**。20% 概率变异，旋律会缓慢演变。<br>- **全右 (CW)**: **纯随机**。完全不可预测的随机序列。 |
+| **SLOPE** | **Scale** | **音阶选择**。<br>将旋钮行程分为 6 段，选择量化音阶 (详见下表)。 |
+| **SMOOTHNESS** | **Slew** | **滑音限制器**。<br>- **全左**: 0ms (阶梯状电压)。<br>- **全右**: 最大滑音时间 (Portamento)。 |
+| **SHIFT/LEVEL** | **Harmony** | **副旋律音程偏移**。<br>控制 OUT 3 相对于 OUT 1 的音高关系 (±2 Octaves)。<br>创造和声或对位旋律。 |
 
 ---
 
-## 🔌 输出端口分配 (Quantum 模式)
+## 🔘 按钮功能 (Buttons)
 
-Tides V2 的四个输出口被重新分配，以最大化系统的联动性：
+在 Quantum 模式下，按钮用于设置节奏密度和分频比。**LED 颜色代表当前设置**。
 
-- **OUTPUT 1 (Main CV)**:
-  - **主旋律输出**。
-  - 这里的电压是主要生成的随机游走结果，经过了量化。
-  - *建议连接*: 主振荡器 (如 Plaits) 的 V/Oct 输入。
+### 1. 中间按钮 (原 RAMP): Gate Probability
+控制 **Bernoulli Gate (概率丢音)**。决定生成的音符有多大概率被触发。主副通道独立计算。
 
-- **OUTPUT 2 (Harmony CV 1)**:
-  - **和声输出**。
-  - 基于主旋律，并叠加了由 **SHIFT** 旋钮控制的偏移量。
-  - *建议连接*: 副振荡器、滤波器的 Cutoff、或 Plaits 的 Harmonics/Timbre 参数。
+| LED 颜色 | 概率 | 听感描述 |
+| :---: | :--- | :--- |
+| ⚫️ **灭 (OFF)** | **100%** | **密集 (Dense)**。所有音符都触发，不丢音。 |
+| 🟢 **绿 (Green)** | **75%** | **常规**。偶尔丢几个音，增加呼吸感。 |
+| 🟡 **黄 (Yellow)** | **50%** | **稀疏**。只有一半的音符会被演奏。 |
+| 🔴 **红 (Red)** | **25%** | **极简 (Sparse)**。零星的点缀音符，适合环境音乐。 |
 
-- **OUTPUT 3 (Gate/Trigger)**:
-  - **随机触发门信号**。
-  - 每当生成一个新的随机音符时，这里会输出一个高电平脉冲 (Gate/Trig)。
-  - *注意*: 此输出不随 Shift 变化，它专门用于触发包络。
-  - *建议连接*: 包络发生器 (如 Miasma) 的 Trig 输入。
+### 2. 顶部按钮 (原 FREQ): Sub Clock Divider
+控制 **OUT 4 (Sub Gate)** 相对于主时钟的分频比率。
 
-- **OUTPUT 4 (Harmony CV 2)**:
-  - **第二和声输出**。
-  - 类似于 Output 2，但具有不同的音程偏移计算方式，提供更丰富的复音纹理。
-  - *建议连接*: 效果器参数 (如 Mimeophon 的 Rate/Zone) 或立体声滤波器的另一侧。
+| LED 颜色 | 分频比 | 节奏关系 |
+| :---: | :--- | :--- |
+| ⚫️ **灭 (OFF)** | **1 : 1** | **同步**。主副通道同时触发 (齐奏)。 |
+| 🟢 **绿 (Green)** | **1 : 2** | **半速**。主通道响 2 次，副通道响 1 次。 |
+| 🟡 **黄 (Yellow)** | **1 : 4** | **四分频**。适合用副通道演奏长音或和弦铺底。 |
+| 🔴 **红 (Red)** | **Random** | **随机分频**。副通道随机触发，产生复杂的复节奏。 |
 
 ---
 
-## 🛠 典型用法示例
+## 🎹 音阶列表 (Scales)
 
-### 1. 自动生成旋律 (Self-Running Patch)
+通过旋转 **SLOPE** 旋钮选择：
 
-- **配置**: 拔掉 TRIG 输入。
-
-- **连线**: Tides Out 1 -> Plaits V/Oct。
-- **操作**:
-  - 调节 **Frequency** 改变旋律速度。
-  - 调节 **Slope** 选择一个悦耳的音阶 (如五声调式)。
-  - 调节 **Shape** 让旋律在低音区徘徊或向高音区爬升。
-
-### 2. 节奏锁定的随机 (Clocked Random)
-
-- **配置**: 将外部音序器或 LFO (如 øchd) 的方波接入 **TRIG**。
-
-- **连线**:
-  - Tides Out 1 -> 振荡器 V/Oct。
-  - Tides Out 3 -> 包络发生器 (Miasma) Trig。
-  - 包络输出 -> VCA CV。
-- **效果**: Tides 会跟随你的系统速度生成旋律。Tides 的 Out 3 确保只有在音高变化时才触发声音，创造出紧致的节奏感。
-
-### 3. 多复音/和弦生成 (Poly/Chord Generation)
-
-- **配置**: 使用一个支持多路 V/Oct 的振荡器 (或 Plaits 的 Chord 模式)。
-
-- **连线**:
-  - Tides Out 1 -> 根音 V/Oct。
-  - Tides Out 2 -> 和弦参数 (Harmonics) 或第二振荡器 V/Oct。
-- **操作**: 旋转 **Shift** 旋钮。你会听到伴随随机旋律的自动和声变化，从单音铺底 (Unison) 到宽广的和弦 (Wide Spread)。
+1.  **Chromatic** (半音阶)
+2.  **Major / Lydian** (大调)
+3.  **Minor** (小调)
+4.  **Pentatonic Major** (大调五声) - *推荐* ⭐
+5.  **Pentatonic Minor** (小调五声)
+6.  **Octaves** (八度)
 
 ---
 
 ## ⚠️ 注意事项
 
-- **电压范围**: 输出电压通常为双极性 (-5V 到 +5V)，这是为了适应最广泛的 LFO 和 VCO 调制需求。如果你的振荡器只需要正电压 (0-8V)，可能需要外部衰减器或偏置 (Offset)。
-- **校准**: 此固件使用 Tides 原厂的校准数据。如果音高不准，请先在原厂模式下按照官方流程进行校准。
+1.  **原厂模式兼容性**: 刷入此固件后，原厂模式 (Standard Tides) 的功能完全保留。我们已修复了模式切换时的变量污染问题，确保切回原厂模式时滤波器和频率状态正常。
+2.  **掉电保存**: 由于 Tides 硬件限制，Quantum 模式下的按钮设置（概率/分频）**无法保存**，断电重启后会恢复默认状态 (100% 概率 / 1:1 分频)。
 
 ---
 
-## 编译
+## 编译指南
 
 ```bash
 docker pull archont94/mutable-env:latest
 
 docker run --rm --platform linux/amd64 \
   -e PYTHONPATH=. \
-  -v "/Users/yyf/Documents/GitHub/eurowings":/eurorack \
+  -v "/Users/your_path/eurowings":/eurorack \
   -w /eurorack \
   archont94/mutable-env:latest \
   make -f tides2/makefile wav
-```
-
-*Custom firmware tailored for Eurorack modular systems.*
-*Based on Mutable Instruments Tides source code (MIT License).*

@@ -110,6 +110,12 @@ class PolySlopeGenerator {
     fold_ = 0.0f;
     
     feature_mode_ = FEATURE_MODE_TIDES;
+    
+    // NEW INIT
+    shift_register_ = 0x8000; // Seed
+    sub_clock_counter_ = 0;
+    gate_probability_mode_ = 0;
+    sub_divider_mode_ = 0;
     std::fill(&quantum_current_[0], &quantum_current_[num_channels], 0.0f);
     std::fill(&quantum_target_[0], &quantum_target_[num_channels], 0.0f);
     quantum_trigger_state_ = 0;
@@ -171,27 +177,24 @@ class PolySlopeGenerator {
       OutputSample* out,
       size_t size) {
     
-    // Check for custom Quantum Mode
+    // 恢复为不传 range 参数
     if (feature_mode_ == FEATURE_MODE_QUANTUM) {
-      RenderQuantum(frequency, pw, shape, smoothness, shift, gate_flags, out, size);
-      return;
+      RenderQuantum(frequency, pw, shape, smoothness, shift, gate_flags, ramp, out, size);
+      return; 
     }
 
-    // const float max_ratio = output_mode == OUTPUT_MODE_FREQUENCY
-    //     ? (range == RANGE_CONTROL ? 0.125f : 0.25f)
-    //     : 1.0f;
-    const float max_ratio = 1.0f;
+    // --- 以下保持原厂代码不变 ---
+    const float max_ratio = output_mode == OUTPUT_MODE_FREQUENCY
+      ? (range == RANGE_CONTROL ? 0.125f : 0.25f)
+      : 1.0f;
+    
     frequency = std::min(frequency, 0.25f * max_ratio);
     
     if (range == RANGE_CONTROL && pw < 0.5f) {
-      // Skew the response of the pulse width parameter, so that a more
-      // interesting range of attack times can be set.
       pw = 0.5f + 0.6f * (pw - 0.5f) / (fabsf(pw - 0.5f) + 0.1f);
     }
-
+    
     if (ramp && ramp_mode == RAMP_MODE_AR) {
-      // When locking unto an external ramp, adjust the frequency to get
-      // interesting trapezoidal shapes.
       frequency *= 1.0f + 2.0f * fabsf(pw - 0.5f);
     }
     
@@ -233,168 +236,50 @@ class PolySlopeGenerator {
   void set_feature_mode(FeatureMode mode) {
     feature_mode_ = mode;
   }
+
+  void set_gate_probability_mode(int mode) { gate_probability_mode_ = mode; }
+  void set_sub_divider_mode(int mode) { sub_divider_mode_ = mode; }
+  int gate_probability_mode() const { return gate_probability_mode_; }
+  int sub_divider_mode() const { return sub_divider_mode_; }
   
  private:
-  void RenderQuantum(
-      float frequency,
-      float pw,
-      float shape,
-      float smoothness,
-      float shift,
-      const stmlib::GateFlags* gate_flags,
-      OutputSample* out,
-      size_t size) {
-    
-    // Slew Coefficient Calculation
-    float slew_coeff;
-    if (smoothness < 0.05f) {
-      slew_coeff = 1.0f; 
+  // --- Standard Tides DSP Helpers ---
+  inline float Tame(float f0, float harmonics, float order) {
+    f0 *= harmonics;
+    float max_f = 0.5f * (1.0f / order);
+    float max_amount = 1.0f - (f0 - max_f) / (0.5f - max_f);
+    CONSTRAIN(max_amount, 0.0f, 1.0f);
+    return max_amount * max_amount * max_amount;
+  }
+
+  template<RampMode ramp_mode>
+  inline float Fold(float unipolar, float fold_amount) {
+    if (ramp_mode == RAMP_MODE_LOOPING) {
+      float bipolar = 2.0f * unipolar - 1.0f;
+      float folded = fold_amount > 0.0f ? stmlib::Interpolate(
+          lut_bipolar_fold,
+          0.5f + bipolar * (0.03f + 0.46f * fold_amount),
+          1024.0f) : 0.0f;
+      return 5.0f * (bipolar + (folded - bipolar) * fold_amount);
     } else {
-      float s = 1.0f - smoothness;
-      slew_coeff = 0.001f + s * s * 0.5f; 
+      float folded = fold_amount > 0.0f ? stmlib::Interpolate(
+          lut_unipolar_fold,
+          unipolar * fold_amount,
+          1024.0f) : 0.0f;
+      return 8.0f * (unipolar + (folded - unipolar) * fold_amount);
     }
-    
-    // Scale Selection
-    const int kNumScales = 6;
-    int scale_index = static_cast<int>(pw * kNumScales * 0.99f);
-    if (scale_index >= kNumScales) scale_index = kNumScales - 1;
-    if (scale_index < 0) scale_index = 0;
-
-    stmlib::ParameterInterpolator rate(&frequency_, frequency, size);
-    stmlib::ParameterInterpolator bias(&shape_, shape, size);
-    stmlib::ParameterInterpolator shift_amt(&shift_, shift, size);
-
-    for (size_t i = 0; i < size; ++i) {
-      float current_frequency = rate.Next();
-      float current_shift = shift_amt.Next();
-      float current_bias = bias.Next();
-      
-      bool clocked = false;
-      bool trig_detected = (gate_flags[i] & stmlib::GATE_FLAG_RISING);
-      
-      // Internal Clock Logic
-      float dummy_pw = 0.5f;
-      ramp_generator_.Step<RAMP_MODE_LOOPING, OUTPUT_MODE_AMPLITUDE, RANGE_AUDIO, false>(
-          current_frequency, &dummy_pw, gate_flags[i], 0.0f);
-      
-      // Phase 0..1
-      float phase = ramp_generator_.phase(0);
-
-      // Detect Wrap-around (Clock Tick)
-      if (phase < 0.001f && quantum_trigger_state_ == 1) {
-        clocked = true;
-        quantum_trigger_state_ = 0;
-      } else if (phase > 0.5f) {
-        quantum_trigger_state_ = 1;
-      }
-      
-      if (trig_detected) clocked = true;
-
-      // --- Random Generation ---
-      if (clocked) {
-        float r = stmlib::Random::GetFloat();
-        
-        // Shape Bias
-        float power = 1.0f;
-        if (current_bias > 0.5f) {
-           power = 1.0f - (current_bias - 0.5f) * 1.5f; 
-        } else {
-           power = 1.0f + (0.5f - current_bias) * 6.0f; 
-        }
-        r = powf(r, power);
-        
-        float raw_voltage = r * 5.0f; // 0-5V range
-        float quantized_volts = Quantize(raw_voltage, scale_index);
-        
-        // Update Targets
-        // Out 1: Main Pitch
-        quantum_target_[0] = quantized_volts;
-        
-        // Out 2: Harmony Pitch
-        float harmony_offset = current_shift * 2.0f; // 0-2V spread
-        quantum_target_[1] = Quantize(raw_voltage + harmony_offset, scale_index);
-        
-        // Out 4 Trigger (for Envelope generation)
-        // We set target to 8V instantly on clock, then it will decay
-        quantum_current_[3] = 8.0f; 
-      }
-
-      // --- Slew & Output Calculation ---
-      
-      // Channel 0 & 1 (Pitch CVs) - Apply Slew & Offset
-      for (int ch = 0; ch < 2; ++ch) {
-        float error = quantum_target_[ch] - quantum_current_[ch];
-        quantum_current_[ch] += error * slew_coeff;
-        // Output with +2V Offset (Range 2V - 7V)
-        out[i].channel[ch] = quantum_current_[ch] + 2.0f;
-      }
-
-      // Channel 2 (Output 3): GATE
-      // Logic: High when phase < 0.2 (20% Duty Cycle) OR if external trig happened recently
-      // This creates a clean 0V or 8V pulse.
-      // Note: No Offset!
-      if (phase < 0.2f || (trig_detected && i < 100)) { // Simple pulse logic
-         out[i].channel[2] = 8.0f;
-      } else {
-         out[i].channel[2] = 0.0f;
-      }
-
-      // Channel 3 (Output 4): ENVELOPE (Decay)
-      // Logic: Exponential decay from current value down to 0
-      // Decay speed fixed or modulated? Let's make it fixed fast-ish for now.
-      // 0.9995 per sample @ 48kHz is slow, 0.99 is fast.
-      quantum_current_[3] *= 0.995f; 
-      out[i].channel[3] = quantum_current_[3]; // 0V to 8V range, no offset
+  }
+  
+  template<RampMode ramp_mode>
+  inline float Scale(float unipolar) {
+    if (ramp_mode == RAMP_MODE_LOOPING) {
+      return 10.0f * unipolar - 5.0f;
+    } else {
+      return 8.0f * unipolar;
     }
   }
 
-  float Quantize(float voltage, int scale_idx) {
-    // voltage is in Volts (0.0 to 5.0 typically)
-    // 1 semitone = 1/12 V = 0.08333f
-    
-    // Scales definitions (Intervals from Root)
-    // 0: Chromatic (1,1,1...)
-    // 1: Major (2,2,1,2,2,2,1)
-    // 2: Minor (2,1,2,2,1,2,2)
-    // 3: Pentatonic Major (2,2,3,2,3)
-    // 4: Pentatonic Minor (3,2,2,3,2)
-    // 5: Octaves (12)
-    
-    // Simplified quantization: Convert to semitones, find nearest in scale
-    int semitone = static_cast<int>(std::floor(voltage * 12.0f + 0.5f));
-    int octave = semitone / 12;
-    int note = semitone % 12;
-    if (note < 0) note += 12; // Handle negative if any
-    
-    // Map of allowed notes per scale (Binary mask)
-    // C C# D D# E F F# G G# A A# B
-    const uint16_t kScales[6] = {
-      0b111111111111, // Chromatic
-      0b101011010101, // Major (C D E F G A B)
-      0b101101011010, // Minor (C D Eb F G Ab Bb)
-      0b101010010100, // Penta Major (C D E G A)
-      0b100101010010, // Penta Minor (C Eb F G Bb)
-      0b100000000000  // Octaves (C)
-    };
-    
-    uint16_t mask = kScales[scale_idx];
-    
-    // Find nearest active bit
-    // Simple search up/down
-    if (!(mask & (1 << note))) {
-       // Note not in scale, search neighbors
-       for (int k = 1; k < 6; ++k) {
-          int up = (note + k) % 12;
-          if (mask & (1 << up)) { note = up; break; }
-          int down = (note - k);
-          if (down < 0) down += 12;
-          if (mask & (1 << down)) { note = down; break; }
-       }
-    }
-    
-    return (float)(octave * 12 + note) / 12.0f;
-  }
-
+  // --- Standard Tides Internal Renderers ---
   template<RampMode ramp_mode, OutputMode output_mode, Range range>
   inline void RenderInternal(
       float frequency,
@@ -441,7 +326,6 @@ class PolySlopeGenerator {
         per_channel_pw[j] = pw + pw_increment * float(j);
       }
 
-      // Increment ramps.
       if (output_mode == OUTPUT_MODE_SLOPE_PHASE && ramp_mode == RAMP_MODE_AR) {
         if (ramp) {
           ramp_generator_.Step<ramp_mode, output_mode, range, true>(
@@ -460,7 +344,6 @@ class PolySlopeGenerator {
         }
       }
       
-      // Compute shape.
       const float shape = shape_modulation.Next();
       MAKE_INTEGRAL_FRACTIONAL(shape);
       const int16_t* shape_table = &lut_wavetable[shape_integral * 1025];
@@ -547,41 +430,201 @@ class PolySlopeGenerator {
         frequency, pw, shape, smoothness, shift, gate_flags, ramp, out, size);
   }
   
-  template<RampMode ramp_mode>
-  inline float Fold(float unipolar, float fold_amount) {
-    if (ramp_mode == RAMP_MODE_LOOPING) {
-      float bipolar = 2.0f * unipolar - 1.0f;
-      float folded = fold_amount > 0.0f ? stmlib::Interpolate(
-          lut_bipolar_fold,
-          0.5f + bipolar * (0.03f + 0.46f * fold_amount),
-          1024.0f) : 0.0f;
-      return 5.0f * (bipolar + (folded - bipolar) * fold_amount);
-    } else {
-      float folded = fold_amount > 0.0f ? stmlib::Interpolate(
-          lut_unipolar_fold,
-          unipolar * fold_amount,
-          1024.0f) : 0.0f;
-      return 8.0f * (unipolar + (folded - unipolar) * fold_amount);
+  // --- Quantum Mode Logic ---
+  float GetGateProbability() {
+    switch(gate_probability_mode_) {
+      case 0: return 1.01f; 
+      case 1: return 0.75f;
+      case 2: return 0.50f;
+      case 3: return 0.25f;
     }
+    return 1.0f;
   }
   
-  template<RampMode ramp_mode>
-  inline float Scale(float unipolar) {
-    if (ramp_mode == RAMP_MODE_LOOPING) {
-      return 10.0f * unipolar - 5.0f;
-    } else {
-      return 8.0f * unipolar;
+  bool CheckSubDivider() {
+    sub_clock_counter_++;
+    switch(sub_divider_mode_) {
+      case 0: return true; // 1:1
+      case 1: return (sub_clock_counter_ % 2) == 0; // 1:2
+      case 2: return (sub_clock_counter_ % 4) == 0; // 1:4
+      case 3: return (stmlib::Random::GetFloat() > 0.5f); 
     }
+    return true;
   }
-  
-  inline float Tame(float f0, float harmonics, float order) {
-    f0 *= harmonics;
-    float max_f = 0.5f * (1.0f / order);
-    float max_amount = 1.0f - (f0 - max_f) / (0.5f - max_f);
-    CONSTRAIN(max_amount, 0.0f, 1.0f);
-    return max_amount * max_amount * max_amount;
+
+  float Quantize(float voltage, int scale_idx) {
+    int semitone = static_cast<int>(std::floor(voltage * 12.0f + 0.5f));
+    
+    // --- 修复点 2: 负数 Octave 计算 ---
+    int octave = semitone >= 0 ? semitone / 12 : (semitone - 11) / 12;
+    
+    int note = semitone % 12;
+    if (note < 0) note += 12; 
+    
+    const uint16_t kScales[6] = {
+      0b111111111111, // Chromatic
+      0b101011010101, // Major 
+      0b101101011010, // Minor 
+      0b101010010100, // Penta Major 
+      0b100101010010, // Penta Minor 
+      0b100000000000  // Octaves 
+    };
+    
+    uint16_t mask = kScales[scale_idx];
+    
+    if (!(mask & (1 << note))) {
+       for (int k = 1; k <= 6; ++k) {
+          int up = (note + k) % 12;
+          if (mask & (1 << up)) { note = up; break; }
+          int down = (note - k);
+          if (down < 0) down += 12;
+          if (mask & (1 << down)) { note = down; break; }
+       }
+    }
+    return (float)(octave * 12 + note) / 12.0f;
   }
-  
+
+  void RenderQuantum(
+      float frequency,
+      float pw,
+      float shape,
+      float smoothness,
+      float shift,
+      const stmlib::GateFlags* gate_flags,
+      const float* ramp, 
+      OutputSample* out,
+      size_t size) {
+      
+    // 1. 锁定内部时钟比率 (Unison)
+    ramp_generator_.set_next_ratio(&audio_ratio_table_[10][0]);
+    
+    // 2.【修复】重置滤波器状态，防止切回原厂模式时产生爆音或信号堵塞
+    filter_.Init();
+
+    // 3. 速度调整 (x8 倍速)
+    float effective_frequency = frequency * 8.0f; 
+    effective_frequency = std::min(effective_frequency, 0.49f);
+
+    float slew_coeff;
+    if (smoothness < 0.05f) slew_coeff = 1.0f; 
+    else {
+      float s = 1.0f - smoothness;
+      slew_coeff = 0.001f + s * s * 0.5f; 
+    }
+
+    const int kNumScales = 6;
+    int scale_index = static_cast<int>(pw * kNumScales * 0.99f);
+    if (scale_index >= kNumScales) scale_index = kNumScales - 1;
+    if (scale_index < 0) scale_index = 0;
+
+    stmlib::ParameterInterpolator rate(&frequency_, effective_frequency, size);
+    stmlib::ParameterInterpolator bias(&shape_, shape, size); 
+    stmlib::ParameterInterpolator shift_amt(&shift_, shift, size);
+
+    for (size_t i = 0; i < size; ++i) {
+      float current_frequency = rate.Next();
+      float mutation_knob = bias.Next(); 
+      float current_shift = shift_amt.Next();
+      
+      bool gate_rising = (gate_flags[i] & stmlib::GATE_FLAG_RISING);
+      
+      float dummy_pw = 0.5f;
+      uint8_t step_flags = gate_rising ? stmlib::GATE_FLAG_RISING : stmlib::GATE_FLAG_LOW;
+      
+      ramp_generator_.Step<RAMP_MODE_LOOPING, OUTPUT_MODE_AMPLITUDE, RANGE_AUDIO, false>(
+          current_frequency, &dummy_pw, step_flags, 0.0f);
+      
+      // 判定阈值放宽到 0.05f 以适应高频
+      bool internal_cycle_complete = false;
+      if (ramp_generator_.phase(0) < 0.05f && quantum_trigger_state_ == 1) {
+        internal_cycle_complete = true;
+        quantum_trigger_state_ = 0;
+      } else if (ramp_generator_.phase(0) > 0.5f) {
+        quantum_trigger_state_ = 1;
+      }
+      
+      bool clocked = gate_rising || internal_cycle_complete;
+
+      if (clocked) {
+        // === 1. Turing Machine Update ===
+        if (shift_register_ == 0) shift_register_ = 0x8000; // Anti-lock
+
+        float mutation_prob = 0.0f;
+        if (mutation_knob < 0.5f) {
+            mutation_prob = mutation_knob * 0.4f; 
+        } else {
+            mutation_prob = 0.2f + (mutation_knob - 0.5f) * 1.6f; 
+        }
+        
+        uint8_t lsb = shift_register_ & 1;
+        bool flip = stmlib::Random::GetFloat() < mutation_prob;
+        uint8_t new_bit = flip ? !lsb : lsb;
+        shift_register_ = (shift_register_ >> 1) | (new_bit << 31);
+        
+        uint32_t scrambled = (shift_register_ ^ (shift_register_ >> 8) ^ (shift_register_ >> 16));
+        float raw_val = static_cast<float>(scrambled & 0x7F) / 127.0f;
+        
+        float transposition = (ramp) ? (ramp[i] * 5.0f) : 0.0f;
+        float raw_voltage = 2.0f + (raw_val * 4.0f) + transposition; 
+
+        float probability_setting = GetGateProbability(); 
+
+        // === 2. Main Channel ===
+        if (stmlib::Random::GetFloat() < probability_setting) {
+             quantum_target_[0] = Quantize(raw_voltage, scale_index); 
+             quantum_target_[1] = 8.0f; 
+        } else {
+             quantum_target_[1] = 0.0f; 
+        }
+
+        // === 3. Sub Channel ===
+        bool divider_pass = CheckSubDivider();
+        if (divider_pass) {
+             float harmony_offset = current_shift * 2.0f; 
+             float potential_sub_cv = Quantize(raw_voltage + harmony_offset, scale_index);
+             
+             if (stmlib::Random::GetFloat() < probability_setting) {
+                 quantum_target_[2] = potential_sub_cv;
+                 quantum_target_[3] = 8.0f; 
+             } else {
+                 quantum_target_[3] = 0.0f; 
+             }
+        }
+        
+      } else {
+        if (ramp_generator_.phase(0) > 0.5f) {
+            quantum_target_[1] = 0.0f;
+            quantum_target_[3] = 0.0f;
+        }
+      }
+
+      for (int ch = 0; ch < 4; ++ch) {
+        if (ch == 1 || ch == 3) {
+            quantum_current_[ch] = quantum_target_[ch];
+        } else {
+            float error = quantum_target_[ch] - quantum_current_[ch];
+            quantum_current_[ch] += error * slew_coeff;
+        }
+        out[i].channel[ch] = quantum_current_[ch]; 
+      }
+    }
+    
+    // ===【关键修复】还原成员变量 ===
+    // 退出前，将成员变量恢复到原厂模式期望的范围。
+    // 这能消除切换模式瞬间 ParameterInterpolator 产生的巨大数值跳变。
+    
+    // 1. 还原 pw
+    pw_ = pw;
+    
+    // 2. 还原 shift (原厂期望 -1.0 到 1.0)
+    shift_ = 2.0f * shift - 1.0f;
+    
+    // 3. 还原 frequency (原厂期望原始低频值)
+    // 这样切回原厂时，插值器从正常值开始，而不是从 8 倍频开始跌落
+    frequency_ = frequency;
+  }
+
+  // Member Variables
   float frequency_;
   float pw_;
   float shift_;
@@ -590,11 +633,15 @@ class PolySlopeGenerator {
   
   stmlib::HysteresisQuantizer2 ratio_index_quantizer_;
 
-  // Quantum Mode State Variables
   FeatureMode feature_mode_;
   float quantum_current_[num_channels];
   float quantum_target_[num_channels];
   int quantum_trigger_state_;
+  
+  uint32_t shift_register_;      
+  uint32_t sub_clock_counter_;   
+  int gate_probability_mode_;    
+  int sub_divider_mode_;         
 
   RampGenerator<num_channels> ramp_generator_;
 
