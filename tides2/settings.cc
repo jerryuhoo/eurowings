@@ -64,6 +64,18 @@ bool Settings::Init() {
   persistent_data_.adc_calibration[0].offset = +25.68f;
   persistent_data_.adc_calibration[1].scale = -96.0f;
   persistent_data_.adc_calibration[1].offset = +0.0f;
+
+  #if 1
+  // Edmond's settings for the second build (purple PCB)
+    persistent_data_.dac_calibration[0].offset = 32921.0706f;
+    persistent_data_.dac_calibration[0].scale = -4030.859059f;
+    persistent_data_.dac_calibration[1].offset = 32861.40281f;
+    persistent_data_.dac_calibration[1].scale = -4024.104568f;
+    persistent_data_.dac_calibration[2].offset = 32887.31809f;
+    persistent_data_.dac_calibration[2].scale = -4019.608222f;
+    persistent_data_.dac_calibration[3].offset = 32867.14386f;
+    persistent_data_.dac_calibration[3].scale = -4026.01825f;
+  #endif
   
   state_.mode = 1;
   state_.range = 2;
@@ -73,7 +85,7 @@ bool Settings::Init() {
   
   if (success) {
     // Sanitize settings read from flash.
-    FIX_OUTLIER(persistent_data_.adc_calibration[0].scale, -60.0f);
+    FIX_OUTLIER(persistent_data_.adc_calibration[0].scale, -57.66);
     FIX_OUTLIER(persistent_data_.adc_calibration[0].offset, +25.68f);
     FIX_OUTLIER(persistent_data_.adc_calibration[1].scale, -96.0f);
     
@@ -92,6 +104,7 @@ bool Settings::Init() {
     CONSTRAIN(state_.feature_mode, 0, 1);
     CONSTRAIN(state_.gate_probability_mode, 0, 3);
     CONSTRAIN(state_.sub_divider_mode, 0, 3);
+    persistent_data_.adc_calibration[0].scale = -57.66f;
   }
   
   return success;

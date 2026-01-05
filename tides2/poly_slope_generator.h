@@ -501,8 +501,8 @@ class PolySlopeGenerator {
     // 2.【修复】重置滤波器状态，防止切回原厂模式时产生爆音或信号堵塞
     filter_.Init();
 
-    // 3. 速度调整 (x8 倍速)
-    float effective_frequency = frequency * 8.0f; 
+    // 3. 速度调整
+    float effective_frequency = frequency; 
     effective_frequency = std::min(effective_frequency, 0.49f);
 
     float slew_coeff;

@@ -147,11 +147,13 @@ void Process(IOBuffer::Block* block, size_t size) {
 #ifdef PROFILE_INTERRUPT
   ScopedDebugPinToggler toggler;
 #endif  // PROFILE_INTERRUPT
+
   const State& state = settings.state();
   const RampMode ramp_mode = RampMode(state.mode);
   const OutputMode output_mode = OutputMode(state.output_mode);
   const Range range = state.range < 2 ? RANGE_CONTROL : RANGE_AUDIO;
   const bool half_speed = output_mode >= OUTPUT_MODE_SLOPE_PHASE;
+  
   float transposition = block->parameters.frequency + block->parameters.fm;
   CONSTRAIN(transposition, -128.0f, 127.0f);
   
@@ -169,17 +171,14 @@ void Process(IOBuffer::Block* block, size_t size) {
     return;
   }
 
-  // Because kDacBlockSize half of the samples from the TRIG and CLOCK inputs
-  // in block->input are missing.
+  // Handle missing GATE samples for different block sizes.
   if (half_speed) {
-    // Not a problem because we're working at SR/2 anyway: just shift everything
     size >>= 1;
     for (size_t i = 0; i < size; ++i) {
       block->input[0][i] = block->input[0][2 * i];
       block->input[1][i] = block->input[1][2 * i];
     }
   } else {
-    // Interpolate the missing GATE samples.
     for (size_t i = 0; i < size; i += 2) {
       block->input[0][i + 1] = block->input[0][i] & GATE_FLAG_HIGH;
       block->input[1][i + 1] = block->input[1][i] & GATE_FLAG_HIGH;
@@ -188,10 +187,10 @@ void Process(IOBuffer::Block* block, size_t size) {
 
   float frequency;
   if (block->input_patched[1]) {
+    // Clocked/Locked mode: frequency is derived from the external ramp.
     if (must_reset_ramp_extractor) {
       ramp_extractor.Reset();
     }
-    
     Ratio r = ratio_index_quantizer.Lookup(
         kRatios, 0.5f + transposition * 0.0105f);
     frequency = ramp_extractor.Process(
@@ -203,6 +202,7 @@ void Process(IOBuffer::Block* block, size_t size) {
         size);
     must_reset_ramp_extractor = false;
   } else {
+    // Free-running mode: calculate frequency from knob and range.
     frequency = kRoot[state.range] * stmlib::SemitonesToRatio(transposition);
     if (half_speed) {
       frequency *= 2.0f;
@@ -215,11 +215,26 @@ void Process(IOBuffer::Block* block, size_t size) {
     previous_output_mode = output_mode;
   }
 
+  // --- Quantum Mode ---
+  
+  // Use a local variable to hold the frequency for the renderer.
+  float frequency_for_render = frequency;
+
+  // Check if we are in Quantum Mode (feature_mode == 1) and using the internal clock.
+  if (state.feature_mode == 1 && !block->input_patched[1]) {
+    // Force the base frequency to kRoot[1] (Range 1 / Yellow LED base).
+    // This prevents the sequencer from running at audio rates when in Range 2.
+    frequency_for_render = kRoot[1] * stmlib::SemitonesToRatio(transposition);
+    if (half_speed) {
+      frequency_for_render *= 2.0f;
+    }
+  }
+
   poly_slope_generator.Render(
       ramp_mode,
       output_mode,
       range,
-      frequency,
+      frequency_for_render, // Use the corrected frequency
       block->parameters.slope,
       block->parameters.shape,
       block->parameters.smoothness,
@@ -229,6 +244,7 @@ void Process(IOBuffer::Block* block, size_t size) {
       out,
       size);
   
+  // Assign generator outputs to DAC buffer.
   if (half_speed) {
     for (size_t i = 0; i < size; ++i) {
       for (size_t j = 0; j < kNumCvOutputs; ++j) {
