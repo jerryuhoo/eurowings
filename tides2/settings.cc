@@ -80,6 +80,11 @@ bool Settings::Init() {
   state_.mode = 1;
   state_.range = 2;
   state_.output_mode = 0;
+
+  state_.feature_mode = 0; 
+  state_.gate_probability_mode = 0;
+  state_.sub_divider_mode = 0;
+  state_.scale_index = 0;
   
   bool success = chunk_storage_.Init(&persistent_data_, &state_);
   
@@ -104,6 +109,7 @@ bool Settings::Init() {
     CONSTRAIN(state_.feature_mode, 0, 1);
     CONSTRAIN(state_.gate_probability_mode, 0, 3);
     CONSTRAIN(state_.sub_divider_mode, 0, 3);
+    CONSTRAIN(state_.scale_index, 0, 5);
     persistent_data_.adc_calibration[0].scale = -57.66f;
   }
   

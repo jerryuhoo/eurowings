@@ -116,6 +116,8 @@ class PolySlopeGenerator {
     sub_clock_counter_ = 0;
     gate_probability_mode_ = 0;
     sub_divider_mode_ = 0;
+    scale_index_ = 0;
+    
     std::fill(&quantum_current_[0], &quantum_current_[num_channels], 0.0f);
     std::fill(&quantum_target_[0], &quantum_target_[num_channels], 0.0f);
     quantum_trigger_state_ = 0;
@@ -241,6 +243,8 @@ class PolySlopeGenerator {
   void set_sub_divider_mode(int mode) { sub_divider_mode_ = mode; }
   int gate_probability_mode() const { return gate_probability_mode_; }
   int sub_divider_mode() const { return sub_divider_mode_; }
+  inline void set_scale_index(int index) { scale_index_ = index; }
+  inline int scale_index() const { return scale_index_; }
   
  private:
   // --- Standard Tides DSP Helpers ---
@@ -462,12 +466,29 @@ class PolySlopeGenerator {
     if (note < 0) note += 12; 
     
     const uint16_t kScales[6] = {
-      0b111111111111, // Chromatic
-      0b101011010101, // Major 
-      0b101101011010, // Minor 
-      0b101010010100, // Penta Major 
-      0b100101010010, // Penta Minor 
-      0b100000000000  // Octaves 
+      // 1. 五声大调 (Penta Major) - 温暖、明亮、正能量
+      // 构成: 1 2 3 5 6 (无半音，怎么拨都好听)
+      0b101010010100, 
+
+      // 2. 五声小调 (Penta Minor) - 忧郁、深沉、经典
+      // 构成: 1 b3 4 5 b7 (摇滚、蓝调、电子的基础)
+      0b100101010010, 
+
+      // 3. 平调子 (Hirajoshi) - 日式、空灵、神秘
+      // 构成: 1 2 b3 5 b6 (非常适合 Pluck 和此时的东方韵味)
+      0b101100011000, 
+
+      // 4. 全音阶 (Whole Tone) - 迷幻、甚至有点晕眩、梦境感
+      // 构成: 1 2 3 #4 #5 b7 (没有主音感，完全悬浮，Debussy 风格)
+      0b101010101010, 
+
+      // 5. 利底亚调式 (Lydian) - 仙气、魔法、飞翔的感觉
+      // 构成: 1 2 3 #4 5 6 7 (那个 #4 是灵魂，听起来像迪士尼电影配乐)
+      0b101010110101, 
+
+      // 6. 拜占庭/双和声大调 (Double Harmonic) - 异域、甚至有点妖娆、Psytrance
+      // 构成: 1 b2 3 4 5 b6 7 (拥有两个增二度音程，非常“蛇舞”的感觉)
+      0b110011011001  
     };
     
     uint16_t mask = kScales[scale_idx];
@@ -486,55 +507,70 @@ class PolySlopeGenerator {
 
   void RenderQuantum(
       float frequency,
-      float pw,
-      float shape,
-      float smoothness,
-      float shift,
+      float pw,           // SLOPE 旋钮: 全局移调 (Transposition)
+      float shape,        // SHAPE 旋钮: 图灵机变异度 (Mutation)
+      float smoothness,   // SMOOTHNESS 旋钮: 滑音/压摆率 (Slew)
+      float shift,        // SHIFT 旋钮: 键盘分割点 (Split Point)
       const stmlib::GateFlags* gate_flags,
       const float* ramp, 
       OutputSample* out,
       size_t size) {
       
-    // 1. 锁定内部时钟比率 (Unison)
+    // 1. 锁定内部时钟比率 (Unison) - 保持原样
     ramp_generator_.set_next_ratio(&audio_ratio_table_[10][0]);
     
-    // 2.【修复】重置滤波器状态，防止切回原厂模式时产生爆音或信号堵塞
+    // 2. 重置滤波器 - 保持原样
     filter_.Init();
 
-    // 3. 速度调整
+    // 3. 频率限制与平滑系数计算
     float effective_frequency = frequency; 
     effective_frequency = std::min(effective_frequency, 0.49f);
 
     float slew_coeff;
     if (smoothness < 0.05f) slew_coeff = 1.0f; 
     else {
+      // 这里的曲线让旋钮前半段只有轻微滑音，后半段滑音明显
       float s = 1.0f - smoothness;
       slew_coeff = 0.001f + s * s * 0.5f; 
     }
 
-    const int kNumScales = 6;
-    int scale_index = static_cast<int>(pw * kNumScales * 0.99f);
-    if (scale_index >= kNumScales) scale_index = kNumScales - 1;
-    if (scale_index < 0) scale_index = 0;
-
+    // --- 参数插值器设置 ---
+    
+    // 频率平滑
     stmlib::ParameterInterpolator rate(&frequency_, effective_frequency, size);
-    stmlib::ParameterInterpolator bias(&shape_, shape, size); 
-    stmlib::ParameterInterpolator shift_amt(&shift_, shift, size);
+    
+    // 变异度 (Shape) 平滑
+    stmlib::ParameterInterpolator mutation_smoother(&shape_, shape, size); 
 
+    // 【修改】移调 (Transposition) - 由 SLOPE (pw) 控制
+    // 范围: -2.0V 到 +2.0V (即 +/- 2个八度)
+    float target_transposition = (pw - 0.5f) * 4.0f;
+    stmlib::ParameterInterpolator trans_smoother(&pw_, target_transposition, size);
+
+    // 【修改】分割点 (Split Point) - 由 SHIFT (shift) 控制
+    // 范围: 5% 到 95% (避免完全挤死某一轨)
+    float target_split_ratio = 0.05f + (shift * 0.9f);
+    stmlib::ParameterInterpolator split_smoother(&shift_, target_split_ratio, size);
+
+    // 定义总画布宽度 (5个八度)
+    const float kTotalRange = 5.0f;
+
+    // --- 主循环 ---
     for (size_t i = 0; i < size; ++i) {
       float current_frequency = rate.Next();
-      float mutation_knob = bias.Next(); 
-      float current_shift = shift_amt.Next();
+      float current_mutation = mutation_smoother.Next(); 
+      float current_trans = trans_smoother.Next();
+      float current_split_ratio = split_smoother.Next();
       
       bool gate_rising = (gate_flags[i] & stmlib::GATE_FLAG_RISING);
       
+      // 内部时钟发生器逻辑
       float dummy_pw = 0.5f;
       uint8_t step_flags = gate_rising ? stmlib::GATE_FLAG_RISING : stmlib::GATE_FLAG_LOW;
       
       ramp_generator_.Step<RAMP_MODE_LOOPING, OUTPUT_MODE_AMPLITUDE, RANGE_AUDIO, false>(
           current_frequency, &dummy_pw, step_flags, 0.0f);
       
-      // 判定阈值放宽到 0.05f 以适应高频
       bool internal_cycle_complete = false;
       if (ramp_generator_.phase(0) < 0.05f && quantum_trigger_state_ == 1) {
         internal_cycle_complete = true;
@@ -545,15 +581,16 @@ class PolySlopeGenerator {
       
       bool clocked = gate_rising || internal_cycle_complete;
 
+      // === 触发逻辑 ===
       if (clocked) {
-        // === 1. Turing Machine Update ===
-        if (shift_register_ == 0) shift_register_ = 0x8000; // Anti-lock
+        // 1. 更新图灵机移位寄存器 (Turing Machine Update)
+        if (shift_register_ == 0) shift_register_ = 0x8000; // 防止死锁
 
         float mutation_prob = 0.0f;
-        if (mutation_knob < 0.5f) {
-            mutation_prob = mutation_knob * 0.4f; 
+        if (current_mutation < 0.5f) {
+            mutation_prob = current_mutation * 0.4f; 
         } else {
-            mutation_prob = 0.2f + (mutation_knob - 0.5f) * 1.6f; 
+            mutation_prob = 0.2f + (current_mutation - 0.5f) * 1.6f; 
         }
         
         uint8_t lsb = shift_register_ & 1;
@@ -561,67 +598,101 @@ class PolySlopeGenerator {
         uint8_t new_bit = flip ? !lsb : lsb;
         shift_register_ = (shift_register_ >> 1) | (new_bit << 31);
         
+        // 生成 0.0 ~ 1.0 的随机值
         uint32_t scrambled = (shift_register_ ^ (shift_register_ >> 8) ^ (shift_register_ >> 16));
         float raw_val = static_cast<float>(scrambled & 0x7F) / 127.0f;
         
-        float transposition = (ramp) ? (ramp[i] * 5.0f) : 0.0f;
-        float raw_voltage = 2.0f + (raw_val * 4.0f) + transposition; 
-
+        // 外部 V/Oct 输入叠加 (如果有)
+        float ext_pitch = (ramp) ? (ramp[i] * 5.0f) : 0.0f;
+        
+        // 概率门限设置
         float probability_setting = GetGateProbability(); 
+        bool main_gate_active = stmlib::Random::GetFloat() < probability_setting;
 
-        // === 2. Main Channel ===
-        if (stmlib::Random::GetFloat() < probability_setting) {
-             quantum_target_[0] = Quantize(raw_voltage, scale_index); 
-             quantum_target_[1] = 8.0f; 
+        // 计算当前分割电压值
+        float split_voltage = current_split_ratio * kTotalRange;
+
+        // === Output 1 (Bass / Low) Calculation ===
+        if (main_gate_active) {
+             // 范围: [0, split_voltage]
+             float v1_raw = raw_val * split_voltage;
+             
+             // 叠加: 基础2V + 随机电压 + 全局移调 + 外部输入
+             float v1_final = 2.0f + v1_raw + current_trans + ext_pitch;
+             
+             // 量化 (使用按钮选择的 scale_index_)
+             quantum_target_[0] = Quantize(v1_final, scale_index_); 
+             quantum_target_[1] = 8.0f; // Gate High
         } else {
-             quantum_target_[1] = 0.0f; 
+             quantum_target_[1] = 0.0f; // Gate Low
         }
 
-        // === 3. Sub Channel ===
+        // === Output 2 (Lead / High) Calculation ===
+        // Sub Divider 检查: 让第二轨节奏更稀疏/不同
         bool divider_pass = CheckSubDivider();
-        if (divider_pass) {
-             float harmony_offset = current_shift * 2.0f; 
-             float potential_sub_cv = Quantize(raw_voltage + harmony_offset, scale_index);
+        
+        if (divider_pass) { // 如果只想要两轨节奏完全同步，可以把这个判断去掉
+             // 反向运动逻辑: 1.0 - raw_val
+             // 这样 Bass 往高处走时，Lead 会往低处走，在分割点相遇
+             float rnd_2 = 1.0f - raw_val;
              
-             if (stmlib::Random::GetFloat() < probability_setting) {
-                 quantum_target_[2] = potential_sub_cv;
+             // 范围: [split_voltage, kTotalRange]
+             float range_2 = kTotalRange - split_voltage;
+             float v2_raw = split_voltage + (rnd_2 * range_2);
+             
+             float v2_final = 2.0f + v2_raw + current_trans + ext_pitch;
+
+             if (main_gate_active) { // 跟随主概率
+                 quantum_target_[2] = Quantize(v2_final, scale_index_);
                  quantum_target_[3] = 8.0f; 
              } else {
                  quantum_target_[3] = 0.0f; 
              }
+        } else {
+             // 如果 Divider 没过，Gate 设为 0，CV 保持上一次的值(Sample & Hold)
+             quantum_target_[3] = 0.0f;
         }
         
       } else {
+        // Gate Duration 控制: 如果相位过半，关门
         if (ramp_generator_.phase(0) > 0.5f) {
             quantum_target_[1] = 0.0f;
             quantum_target_[3] = 0.0f;
         }
       }
 
+      // === 输出处理 & 压摆率 (Slew Limiting) ===
       for (int ch = 0; ch < 4; ++ch) {
         if (ch == 1 || ch == 3) {
+            // Gate 通道直接赋值，不滑音
             quantum_current_[ch] = quantum_target_[ch];
         } else {
+            // CV 通道应用滑音
             float error = quantum_target_[ch] - quantum_current_[ch];
             quantum_current_[ch] += error * slew_coeff;
         }
+        // 写入输出缓冲
         out[i].channel[ch] = quantum_current_[ch]; 
       }
     }
     
-    // ===【关键修复】还原成员变量 ===
-    // 退出前，将成员变量恢复到原厂模式期望的范围。
-    // 这能消除切换模式瞬间 ParameterInterpolator 产生的巨大数值跳变。
+    // === 关键修复: 状态还原 ===
+    // 这里的目的是欺骗 State 变量，让它在切回普通 Tides 模式时
+    // 处于一个合理的值，而不是残留着 Quantum 模式下的奇怪数值。
     
-    // 1. 还原 pw
+    // 1. 还原 frequency
+    frequency_ = frequency;
+
+    // 2. 还原 pw (SLOPE)
+    // Quantum模式下 pw_ 被用作移调 (-2~2)，但普通模式下它是 0~1 的脉宽。
+    // 这里简单地赋值回原始输入即可。
     pw_ = pw;
     
-    // 2. 还原 shift (原厂期望 -1.0 到 1.0)
+    // 3. 还原 shift (SHIFT)
+    // Tides 原厂模式期望 shift_ 范围是 -1.0 到 1.0 (Bipolar)
+    // 但我们的输入 shift 是 0.0 到 1.0 (Unipolar)
+    // 所以需要转换一下，防止切回原厂模式时波形折叠参数跳变。
     shift_ = 2.0f * shift - 1.0f;
-    
-    // 3. 还原 frequency (原厂期望原始低频值)
-    // 这样切回原厂时，插值器从正常值开始，而不是从 8 倍频开始跌落
-    frequency_ = frequency;
   }
 
   // Member Variables
@@ -630,6 +701,7 @@ class PolySlopeGenerator {
   float shift_;
   float shape_;
   float fold_;
+  int scale_index_;
   
   stmlib::HysteresisQuantizer2 ratio_index_quantizer_;
 

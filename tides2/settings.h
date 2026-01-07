@@ -69,7 +69,7 @@ struct State {
   uint8_t feature_mode;        // 0: Tides, 1: Quantum
   uint8_t gate_probability_mode;
   uint8_t sub_divider_mode;
-  uint8_t padding[1];          // 原来是 [4], 用了 3 个字节，剩 1 个
+  uint8_t scale_index;
   
   enum { tag = 0x54415453 };  // STAT
 };

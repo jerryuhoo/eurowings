@@ -70,6 +70,17 @@ void Ui::Init(Settings* settings, PolySlopeGenerator* generator, FactoryTest* fa
   generator_->set_gate_probability_mode(s.gate_probability_mode);
   generator_->set_sub_divider_mode(s.sub_divider_mode);
   
+  // === 恢复 Scale Index (音阶记忆) ===
+  uint8_t stored_scale = s.scale_index;
+  
+  // 安全检查：防止初次刷机时内存里的随机垃圾数据导致越界
+  // 我们只有 6 个音阶 (0-5)，如果读出来的值 >= 6，就强制重置为 0
+  if (stored_scale >= 6) {
+      stored_scale = 0;
+  }
+  generator_->set_scale_index(stored_scale);
+  // ===========================================
+  
   if (switches_.pressed_immediate(SWITCH_SHIFT)) {
     State* state = settings_->mutable_state();
     if (state->color_blind == 1) {
@@ -139,7 +150,11 @@ LedColor Ui::MakeColor(uint8_t value, bool color_blind) {
 void Ui::UpdateLEDs() {
   leds_.Clear();
   
+  // 原有的慢闪烁 (用于校准模式等)
   bool blink = system_clock.milliseconds() & 256;
+  
+  // 【新增】快闪烁 (用于音阶指示，频率稍快一点，视觉上更干脆)
+  bool fast_blink = system_clock.milliseconds() & 128;
   
   switch (mode_) {
     case UI_MODE_NORMAL:
@@ -149,6 +164,8 @@ void Ui::UpdateLEDs() {
 
         if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_QUANTUM) {
           // --- Quantum Mode LED Scheme ---
+          
+          // 1. Top LED (RANGE): Sub Divider Mode
           int sub_div = generator_->sub_divider_mode();
           LedColor col_top = LED_COLOR_OFF;
           if (sub_div == 1) col_top = LED_COLOR_GREEN;
@@ -156,6 +173,7 @@ void Ui::UpdateLEDs() {
           else if (sub_div == 3) col_top = LED_COLOR_RED;
           leds_.set(LED_RANGE, col_top);
 
+          // 2. Mid LED (MODE): Gate Probability Mode
           int gate_prob = generator_->gate_probability_mode();
           LedColor col_mid = LED_COLOR_OFF;
           if (gate_prob == 1) col_mid = LED_COLOR_GREEN;
@@ -163,7 +181,26 @@ void Ui::UpdateLEDs() {
           else if (gate_prob == 3) col_mid = LED_COLOR_RED;
           leds_.set(LED_MODE, col_mid);
 
-          leds_.set(LED_SHIFT, blink ? LED_COLOR_RED : LED_COLOR_GREEN);
+          // 3. Bottom LED (SHIFT): Scale Index 【此处修改】
+          int scale = generator_->scale_index();
+          LedColor col_scale = LED_COLOR_OFF;
+          
+          // 步骤 A: 确定基础颜色 (循环: 绿->黄->红)
+          int color_idx = scale % 3;
+          if (color_idx == 0) col_scale = LED_COLOR_GREEN;       // 音阶 0 & 3
+          else if (color_idx == 1) col_scale = LED_COLOR_YELLOW; // 音阶 1 & 4
+          else if (color_idx == 2) col_scale = LED_COLOR_RED;    // 音阶 2 & 5
+          
+          // 步骤 B: 确定是否闪烁
+          // 如果是后三个音阶 (3, 4, 5)，则应用闪烁逻辑
+          if (scale >= 3) {
+              // 如果处于闪烁周期的“灭”状态，则强制关灯
+              if (!fast_blink) {
+                  col_scale = LED_COLOR_OFF;
+              }
+          }
+          
+          leds_.set(LED_SHIFT, col_scale);
           
         } else {
           // --- Normal Tides LED Scheme ---
@@ -201,16 +238,16 @@ void Ui::OnSwitchPressed(const Event& e) {
 void Ui::OnSwitchReleased(const Event& e) {
   if (mode_ == UI_MODE_NORMAL) {
     if (e.data >= kLongPressDuration) {
-      // --- Long Press Handlers ---
+      // --- Long Press Handlers (长按逻辑) ---
       
-      // 1. Original Calib Combo
+      // 1. Original Calib Combo (原厂校准组合键)
       if ((e.control_id == SWITCH_RANGE && switches_.pressed(SWITCH_SHIFT)) ||
           (e.control_id == SWITCH_SHIFT && switches_.pressed(SWITCH_RANGE))) {
         mode_ = UI_MODE_CALIBRATION_C1;
         factory_test_->Calibrate(0, 1.0f, 3.0f);
         ignore_release_[SWITCH_RANGE] = ignore_release_[SWITCH_SHIFT] = true;
       }
-      // 2. Quantum/Tides
+      // 2. Quantum/Tides Mode Switch (切换 Quantum/原厂模式)
       else if (e.control_id == SWITCH_SHIFT && !switches_.pressed(SWITCH_RANGE)) {
         if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_TIDES) {
           feature_mode_ = PolySlopeGenerator::FEATURE_MODE_QUANTUM;
@@ -226,7 +263,7 @@ void Ui::OnSwitchReleased(const Event& e) {
         ignore_release_[SWITCH_SHIFT] = true; 
       }
     } else {
-      // --- Short Press Handlers ---
+      // --- Short Press Handlers (短按逻辑) ---
       
       if (feature_mode_ == PolySlopeGenerator::FEATURE_MODE_QUANTUM) {
           State* s = settings_->mutable_state();
@@ -250,13 +287,23 @@ void Ui::OnSwitchReleased(const Event& e) {
               }
               break;
               
-            case SWITCH_SHIFT: // Bottom Button: Output Mode
+            case SWITCH_SHIFT: // Bottom Button: Scale Switching
+              {
+                // 【新增】音阶切换逻辑
+                // 读取当前音阶，+1，取模6，保存
+                int current_scale = generator_->scale_index();
+                current_scale = (current_scale + 1) % 6;
+                
+                generator_->set_scale_index(current_scale);
+                s->scale_index = current_scale;
+              }
               break;
           }
           
           settings_->SaveState();
           
       } else {
+          // --- Normal Tides Logic ---
           State* s = settings_->mutable_state();
           switch (e.control_id) {
             case SWITCH_MODE: 
@@ -273,11 +320,20 @@ void Ui::OnSwitchReleased(const Event& e) {
       }
     }
   } else if (mode_ == UI_MODE_CALIBRATION_C1) {
+    // 确认 1V 输入
     factory_test_->Calibrate(1, 1.0f, 3.0f);
     mode_ = UI_MODE_CALIBRATION_C3;
+    
+    // 【修复】清空按键队列，防止按键抖动导致瞬间确认了下一步(3V)
+    queue_.Init(); 
+    
   } else if (mode_ == UI_MODE_CALIBRATION_C3) {
+    // 确认 3V 输入
     factory_test_->Calibrate(2, 1.0f, 3.0f);
     mode_ = UI_MODE_NORMAL;
+    
+    // 【建议】退出校准时也清空一下队列，防止误触
+    queue_.Init();
   }
 }
 
